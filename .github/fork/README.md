@@ -1,7 +1,7 @@
 # Mihomo fork maintenance
 
 `Meta` tracks the latest published stable `vX.Y.Z` GitHub Release from
-`MetaCubeX/mihomo`. The sync runs hourly at minute 23 UTC. It is also available
+`MetaCubeX/mihomo`. The sync runs daily at 01:23 UTC (09:23 in Taipei). It is also available
 in Actions under **Sync and release stable Mihomo**. The workflow verifies that
 the upstream tag is on upstream `Meta` before attempting a merge.
 

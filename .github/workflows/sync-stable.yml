@@ -2,7 +2,7 @@ name: Sync and release stable Mihomo
 
 on:
   schedule:
-    - cron: '23 * * * *'
+    - cron: '23 1 * * *'
   workflow_dispatch:
 
 permissions:
