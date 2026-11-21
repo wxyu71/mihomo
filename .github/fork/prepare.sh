@@ -7,8 +7,8 @@ tag=$(jq -er 'select(.draft == false and .prerelease == false and .published_at 
 [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
 
 fork_releases=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100")
-if jq -es --arg tag "$tag" 'any(.[][]; .tag_name == $tag and .draft == false and .prerelease == false)' \
-    <<< "$fork_releases" >/dev/null; then
+published=$(jq -cs --arg tag "$tag" 'any(.[][]; .tag_name == $tag and .draft == false and .prerelease == false)' <<< "$fork_releases")
+if [[ $published == true ]]; then
   echo "$tag is already published in the fork."
   exit 0
 fi
@@ -29,7 +29,8 @@ GIT_AUTHOR_DATE=$(git show -s --format=%cI "$source")
 export GIT_AUTHOR_DATE GIT_COMMITTER_DATE="$GIT_AUTHOR_DATE"
 
 mode=build
-if [[ -n $(git ls-remote --refs origin "refs/tags/$tag") ]]; then
+remote_tag=$(git ls-remote --refs origin "refs/tags/$tag")
+if [[ -n $remote_tag ]]; then
   # Resume a publication interrupted after the atomic branch/tag push.
   git fetch --no-tags origin "refs/tags/$tag:refs/sync/fork-release"
   candidate=$(git rev-parse 'refs/sync/fork-release^{commit}')
@@ -42,6 +43,7 @@ elif ! git merge-base --is-ancestor "$source" "$base"; then
     [[ -n $(git ls-files -u) ]]
   fi
   # The fork owns its Actions setup. Merge upstream source and keep the current workflow tree.
+  git rm -rf --ignore-unmatch -- .github/workflows
   git restore --source=HEAD --staged --worktree -- .github/workflows
   if [[ -n $(git ls-files -u) ]]; then
     git diff --name-only --diff-filter=U > "$RUNNER_TEMP/conflicts.txt"

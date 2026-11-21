@@ -7,14 +7,18 @@ git merge-base --is-ancestor "$UPSTREAM_SHA" "$CANDIDATE"
 if [[ $1 == conflict ]]; then
   git diff --exit-code "$BASE_SHA" "$CANDIDATE" -- .github/workflows
   head="upstream-sync/$TAG"
-  if ! git ls-remote --exit-code --heads origin "refs/heads/$head" >/dev/null; then
-    git push origin "$CANDIDATE:refs/heads/$head"
-  fi
-  open_pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --base Meta --head "$head" \
-    --state open --json url --jq '.[0].url // empty')
-  if [[ -n $open_pr ]]; then
-    echo "Conflict PR: $open_pr"
+  existing_pr=$(gh api --method GET "repos/$GITHUB_REPOSITORY/pulls" \
+    -f base=Meta -f "head=${GITHUB_REPOSITORY%%/*}:$head" -f state=all --jq '.[0].html_url // empty')
+  if [[ -n $existing_pr ]]; then
+    echo "Conflict PR: $existing_pr"
     exit 0
+  fi
+  remote_head=$(git ls-remote --heads origin "refs/heads/$head")
+  if [[ -z $remote_head ]]; then
+    git push origin "$CANDIDATE:refs/heads/$head"
+  else
+    git fetch --no-tags origin "refs/heads/$head"
+    git merge-base --is-ancestor "$UPSTREAM_SHA" FETCH_HEAD
   fi
   {
     printf 'Upstream release: https://github.com/MetaCubeX/mihomo/releases/tag/%s\n\n' "$TAG"

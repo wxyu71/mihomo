@@ -85,6 +85,11 @@ jobs:
         run: go test ./... -count=1
       - name: Test build with gVisor and Tailscale
         run: go test -tags with_gvisor ./... -count=1
+      - name: Require the fork's Tailscale regression test to run
+        run: |
+          result=$(go test -tags with_gvisor ./adapter/outbound -run '^TestTailscaleDialerProxyBindsUDP$' -v -count=1)
+          printf '%s\n' "$result"
+          grep -F -- '--- PASS: TestTailscaleDialerProxyBindsUDP' <<< "$result"
 
   build:
     needs: [prepare, test]
