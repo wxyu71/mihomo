@@ -1,0 +1,201 @@
+name: Sync and release stable Mihomo
+
+on:
+  schedule:
+    - cron: '23 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mihomo-stable-sync
+  cancel-in-progress: false
+
+env:
+  CGO_ENABLED: '0'
+  GOTOOLCHAIN: local
+  SKIP_CONCURRENT_TEST: '1'
+  SKIP_INTEROP_TEST: '1'
+  MSYS_NO_PATHCONV: '1'
+
+jobs:
+  prepare:
+    if: github.repository == 'wxyu71/mihomo' && github.ref == 'refs/heads/Meta'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      mode: ${{ steps.plan.outputs.mode }}
+      tag: ${{ steps.plan.outputs.tag }}
+      base: ${{ steps.plan.outputs.base }}
+      upstream: ${{ steps.plan.outputs.upstream }}
+      candidate: ${{ steps.plan.outputs.candidate }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Find and merge the latest official release
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/fork/prepare.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: steps.plan.outputs.mode != ''
+        with:
+          name: candidate
+          path: |
+            ${{ runner.temp }}/candidate.bundle
+            ${{ runner.temp }}/conflicts.txt
+          if-no-files-found: error
+          compression-level: 0
+
+  test:
+    needs: prepare
+    if: needs.prepare.outputs.mode == 'build'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: candidate
+          path: ${{ runner.temp }}
+      - name: Check out the merge candidate
+        env:
+          CANDIDATE: ${{ needs.prepare.outputs.candidate }}
+        run: |
+          git fetch "$RUNNER_TEMP/candidate.bundle" HEAD
+          test "$(git rev-parse FETCH_HEAD)" = "$CANDIDATE"
+          git checkout --detach "$CANDIDATE"
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.26.x'
+      - name: Test standard build
+        if: runner.os == 'Linux'
+        run: go test ./... -count=1
+      - name: Test build with gVisor and Tailscale
+        run: go test -tags with_gvisor ./... -count=1
+
+  build:
+    needs: [prepare, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows, arch: amd64, amd64: v1, name: windows-amd64-v1 }
+          - { os: windows, arch: amd64, amd64: v3, name: windows-amd64-v3 }
+          - { os: linux, arch: amd64, amd64: v1, name: linux-amd64-v1 }
+          - { os: linux, arch: arm64, name: linux-arm64 }
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: candidate
+          path: ${{ runner.temp }}
+      - name: Check out the tested commit
+        env:
+          CANDIDATE: ${{ needs.prepare.outputs.candidate }}
+        run: |
+          git fetch "$RUNNER_TEMP/candidate.bundle" HEAD
+          test "$(git rev-parse FETCH_HEAD)" = "$CANDIDATE"
+          git checkout --detach "$CANDIDATE"
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.26.x'
+      - name: Compile and package core
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          GOAMD64: ${{ matrix.amd64 }}
+          PLATFORM: ${{ matrix.name }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          cp /etc/ssl/certs/ca-certificates.crt component/ca/ca-certificates.crt
+          mkdir -p dist
+          binary="mihomo-$PLATFORM"
+          if [[ $GOOS == windows ]]; then binary+=.exe; fi
+          module=github.com/metacubex/mihomo/constant
+          go build -tags with_gvisor -trimpath \
+            -ldflags "-w -s -buildid= -X $module.Version=$TAG+wxyu71 -X $module.BuildTime=$(date -u +%FT%TZ)" \
+            -o "dist/$binary" .
+          cd dist
+          if [[ $GOOS == windows ]]; then
+            zip "mihomo-$PLATFORM-$TAG.zip" "$binary"
+          else
+            if [[ $GOARCH == amd64 ]]; then "./$binary" -v | grep -F "$TAG+wxyu71"; fi
+            gzip -n -c "$binary" > "mihomo-$PLATFORM-$TAG.gz"
+          fi
+          rm "$binary"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: package-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
+
+  conflict:
+    needs: prepare
+    if: needs.prepare.outputs.mode == 'conflict'
+    permissions:
+      contents: write
+      pull-requests: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: candidate
+          path: ${{ runner.temp }}
+      - name: Open the conflict resolution PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          BASE_SHA: ${{ needs.prepare.outputs.base }}
+          UPSTREAM_SHA: ${{ needs.prepare.outputs.upstream }}
+          CANDIDATE: ${{ needs.prepare.outputs.candidate }}
+        run: bash .github/fork/publish.sh conflict
+
+  publish:
+    needs: [prepare, build]
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: candidate
+          path: ${{ runner.temp }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: package-*
+          path: ${{ runner.temp }}/release
+          merge-multiple: true
+      - name: Advance Meta and publish a stable GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          BASE_SHA: ${{ needs.prepare.outputs.base }}
+          UPSTREAM_SHA: ${{ needs.prepare.outputs.upstream }}
+          CANDIDATE: ${{ needs.prepare.outputs.candidate }}
+        run: bash .github/fork/publish.sh release

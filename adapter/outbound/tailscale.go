@@ -145,6 +145,12 @@ func NewTailscale(option TailscaleOption) (*Tailscale, error) {
 		backendInitCh: make(chan struct{}),
 	}
 	outbound.dialer = option.NewDialer(outbound.DialOptions())
+	packetDialer := outbound.dialer
+	if option.DialerProxy != "" && option.DialerForAPI == nil {
+		// tsnet binds a local UDP socket before it knows the destination.
+		// Keep control and DERP on the proxy while binding UDP locally.
+		packetDialer = dialer.NewDialer(outbound.DialOptions()...)
+	}
 	outbound.server = &tsnet.Server{
 		Dir:        option.StateDir,
 		Hostname:   option.Hostname,
@@ -159,7 +165,7 @@ func NewTailscale(option TailscaleOption) (*Tailscale, error) {
 		},
 		SystemPacketListener: func(ctx context.Context, network, address string) (net.PacketConn, error) {
 			log.Debugln("[Tailscale](%s) SystemPacketListener: start listen %s %s", option.Name, network, address)
-			pc, err := outbound.dialer.ListenPacket(ctx, network, address, netip.AddrPort{})
+			pc, err := packetDialer.ListenPacket(ctx, network, address, netip.AddrPort{})
 			log.Debugln("[Tailscale](%s) SystemPacketListener: finish listen %s %s, err: %v", option.Name, network, address, err)
 			return pc, err
 		},
